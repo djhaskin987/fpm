@@ -10,6 +10,8 @@ class FPM::Package::Virtualenv < FPM::Package
   # Flags '--foo' will be accessable  as attributes[:virtualenv_foo]
 
 
+  option "--python3-venv", :flag,
+    "Use `python3 -m venv` instead of `virtualenv`"
   option "--pypi", "PYPI_URL",
   "PyPi Server uri for retrieving packages.",
   :default => "https://pypi.python.org/simple"
@@ -111,9 +113,15 @@ class FPM::Package::Virtualenv < FPM::Package
 
     if is_directory
       sync_directories(package, virtualenv_build_folder)
-      safesystem("virtualenv-tools", "--update-path", virtualenv_build_folder)
+      set_venv_to(virtualenv_build_folder, virtualenv_build_folder)
     else
-      virtualenv_options = ["virtualenv"]
+      virtualenv_options = []
+      if self.attributes[:virtualenv_python3_venv]
+        virtualenv_options << "python3" << "-m" << "venv" << "--copies"
+      else
+        virtualenv_options << "virtualenv" << "--always-copy"
+      end
+
       if self.attributes[:virtualenv_system_site_packages?]
           logger.info("Creating virtualenv with --system-site-packages")
           virtualenv_options << "--system-site-packages"
@@ -176,9 +184,7 @@ class FPM::Package::Virtualenv < FPM::Package
       end
     end
 
-    ::Dir.chdir(virtualenv_build_folder) do
-      safesystem("virtualenv-tools", "--update-path", virtualenv_folder)
-    end
+    set_venv_to(virtualenv_build_folder, virtualenv_folder)
 
     if !attributes[:virtualenv_other_files_dir].nil?
       sync_directories(attributes[:virtualenv_other_files_dir], build_path)
@@ -226,5 +232,19 @@ class FPM::Package::Virtualenv < FPM::Package
       end
     end
   end
+
+
+  def set_venv_to(location,path)
+    location = File.expand_path(location)
+    path = File.expand_path(path)
+    Find.find(File.join(location, "bin")) do |f|
+      if ! (f =~ /python/)
+        content = IO.read(f)
+        new_content = text.gsub(/#{location}/, path)
+        IO.write(f, new_content)
+      end
+    end
+  end
+
   public(:input)
 end # class FPM::Package::Virtualenv
