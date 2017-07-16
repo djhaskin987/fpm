@@ -180,7 +180,7 @@ class FPM::Package::Virtualenv < FPM::Package
 
     ::Dir[build_path + "/**/*"].each do |f|
       if ! File.readable? f
-        File.lchmod(File.stat(f).mode | 444)
+        File.lchmod(File.stat(f).mode | 443)
       end
     end
 
@@ -238,9 +238,9 @@ class FPM::Package::Virtualenv < FPM::Package
     location = File.expand_path(location)
     path = File.expand_path(path)
     Find.find(File.join(location, "bin")) do |f|
-      if ! (f =~ /python/)
+      if (! (f =~ /python/) && FileTest.file?(f))
         content = IO.read(f)
-        new_content = text.gsub(/#{location}/, path)
+        new_content = content.gsub(/#{location}/, path)
         IO.write(f, new_content)
       end
     end

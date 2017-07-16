@@ -4,12 +4,12 @@ require "fpm/package/virtualenv" # local
 require "find" # stdlib
 
 def virtualenv_usable?
-  return program_exists?("virtualenv") && program_exists?("virtualenv-tools")
+  return program_exists?("virtualenv") || program_exists?("python3")
 end
 
 if !virtualenv_usable?
   Cabin::Channel.get("rspec").warn("Skipping python virtualenv tests because " \
-    "no virtualenv/tools bin on your path")
+    "no virtualenv/venv bin on your path")
 end
 
 describe FPM::Package::Virtualenv, :if => virtualenv_usable? do
@@ -20,7 +20,7 @@ describe FPM::Package::Virtualenv, :if => virtualenv_usable? do
 
   context "without a version on the input" do
     it "requires that the version be passed separately" do
-      # this failed before I got here
+      # This failed before I got here
       subject.version = "8.1.2"
       subject.input("pip")
     end
@@ -96,6 +96,33 @@ describe FPM::Package::Virtualenv, :if => virtualenv_usable? do
 
       egg_path =  File.join(subject.build_path, '/setup.py')
       expect(File.exists?(egg_path)).to(be_truthy)
+    end
+  end
+  context "python3 is used" do
+    before :each do
+      subject.attributes[:virtuaenv_python3_venv?] = true
+    end
+
+    context "default use" do
+      it "creates a virtualenv with python3" do
+        subject.input("pip")
+        python3_path = File.join(subject.build_path, '/usr/share/python/pip/bin/python3')
+        expect(File.exists?(python3_path)).to(be_truthy)
+      end
+    end
+  end
+
+  context "a directory is given" do
+
+    let :fixtures_dir do
+      File.expand_path("../../fixtures/virtualenv/", File.dirname(__FILE__))
+    end
+
+    context "default use" do
+      it "Sets the name right" do
+        subject.input(File.join(fixtures_dir, "pip"))
+        insist { subject.name } == "pip"
+      end
     end
   end
 
