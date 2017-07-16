@@ -9,6 +9,7 @@ require "fpm/util"
 class FPM::Package::Virtualenv < FPM::Package
   # Flags '--foo' will be accessable  as attributes[:virtualenv_foo]
 
+
   option "--pypi", "PYPI_URL",
   "PyPi Server uri for retrieving packages.",
   :default => "https://pypi.python.org/simple"
@@ -57,6 +58,7 @@ class FPM::Package::Virtualenv < FPM::Package
     package_version = nil
 
     is_requirements_file = (File.basename(package) == "requirements.txt")
+    is_directory = FileTest.directory?(package)
 
     if is_requirements_file
       if !File.file?(package)
@@ -65,20 +67,30 @@ class FPM::Package::Virtualenv < FPM::Package
 
       package = File.join(::Dir.pwd, package) if File.dirname(package) == "."
       package_name = File.basename(File.dirname(package))
-      logger.info("No name given. Using the directory's name", :name => package_name)
+      if !self.name
+        logger.info("No name given. Using the directory's name", :name => package_name)
+      end
+      package_version = nil
+    elsif is_directory
+      if !FileTest.exists?(File.join(package, "bin", "pip"))
+        raise FPM::InvalidPackageConfiguation, "Path `#{package}` is a directory, but not a virtualenv."
+      end
+      package = File.absolute_path(package)
+      package_name = File.basename(package)
+      if !self.name
+        logger.info("No name given. Using the directory's name", :name => package_name)
+      end
       package_version = nil
     elsif m
       package_name = m[1]
       package_version = m[2]
-      self.version ||= package_version
     else
       package_name = package
       package_version = nil
     end
 
-    virtualenv_name = package_name
-
     self.name ||= package_name
+    self.version ||= package_version
 
     if self.attributes[:virtualenv_fix_name?]
       self.name = [self.attributes[:virtualenv_package_name_prefix],
@@ -91,24 +103,28 @@ class FPM::Package::Virtualenv < FPM::Package
         self.attributes[:prefix]
       else
         File.join(installdir,
-                  virtualenv_name)
+                  package_name)
       end
 
     virtualenv_build_folder = build_path(virtualenv_folder)
-
     ::FileUtils.mkdir_p(virtualenv_build_folder)
 
-    if self.attributes[:virtualenv_system_site_packages?]
-        logger.info("Creating virtualenv with --system-site-packages")
-        safesystem("virtualenv", "--system-site-packages", virtualenv_build_folder)
+    if is_directory
+      sync_directories(package, virtualenv_build_folder)
+      safesystem("virtualenv-tools", "--update-path", virtualenv_build_folder)
     else
-        safesystem("virtualenv", virtualenv_build_folder)
+      virtualenv_options = ["virtualenv"]
+      if self.attributes[:virtualenv_system_site_packages?]
+          logger.info("Creating virtualenv with --system-site-packages")
+          virtualenv_options << "--system-site-packages"
+      end
+      virtualenv_options << virtualenv_build_folder
+      safesystem(*virtualenv_options)
     end
 
     pip_exe = File.join(virtualenv_build_folder, "bin", "pip")
     python_exe = File.join(virtualenv_build_folder, "bin", "python")
 
-    # Why is this hack here? It looks important, so I'll keep it in.
     safesystem(python_exe, pip_exe, "install", "-U", "-i",
                attributes[:virtualenv_pypi],
                "pip", "distribute")
@@ -131,12 +147,14 @@ class FPM::Package::Virtualenv < FPM::Package
     target_args = []
     if is_requirements_file
       target_args << "-r" << package
-    else
+    elsif !is_directory
       target_args << package
     end
 
-    pip_args = [python_exe, pip_exe, "install", "-i", attributes[:virtualenv_pypi]] << extra_index_url_args << find_links_url_args << target_args
-    safesystem(*pip_args.flatten)
+    if !target_args.empty?
+      pip_args = [python_exe, pip_exe, "install", "-i", attributes[:virtualenv_pypi]] << extra_index_url_args << find_links_url_args << target_args
+      safesystem(*pip_args.flatten)
+    end
 
     if attributes[:virtualenv_setup_install?]
       logger.info("Running PACKAGE setup.py")
@@ -144,9 +162,10 @@ class FPM::Package::Virtualenv < FPM::Package
       safesystem(*setup_args.flatten)
     end
 
-    if ! is_requirements_file && package_version.nil?
+    # Final try at setting the package version
+    if package_version.nil?
       frozen = safesystemout(python_exe, pip_exe, "freeze")
-      frozen_version = frozen[/#{package}==[^=]+$/]
+      frozen_version = frozen[/#{package_name}==[^=]+$/]
       package_version = frozen_version && frozen_version.split("==")[1].chomp!
       self.version ||= package_version
     end
@@ -162,18 +181,12 @@ class FPM::Package::Virtualenv < FPM::Package
     end
 
     if !attributes[:virtualenv_other_files_dir].nil?
-      # Copy all files from other dir to build_path
-      Find.find(attributes[:virtualenv_other_files_dir]) do |path|
-        src = path.gsub(/^#{attributes[:virtualenv_other_files_dir]}/, '')
-        dst = File.join(build_path, src)
-        copy_entry(path, dst, preserve=true, remove_destination=true)
-        copy_metadata(path, dst)
-      end
+      sync_directories(attributes[:virtualenv_other_files_dir], build_path)
     end
 
     remove_python_compiled_files virtualenv_build_folder
 
-    # use dir to set stuff up properly, mainly so I don't have to reimplement
+    # Use dir to set stuff up properly, mainly so I don't have to reimplement
     # the chdir/prefix stuff special for tar.
     dir = convert(FPM::Package::Dir)
     # don't double prefix the files
@@ -192,6 +205,17 @@ class FPM::Package::Virtualenv < FPM::Package
     dir.cleanup_build
 
   end # def input
+
+  def sync_directories(from,to)
+    # Copy all files in `from` into the directory `to`
+    ::FileUtils.mkdir_p(to)
+    Find.find(from) do |path|
+      src = path.gsub(/^#{from}/, '')
+      dst = File.join(to, src)
+      copy_entry(path, dst, preserve=true, remove_destination=true)
+      copy_metadata(path, dst)
+    end
+  end
 
   # Delete python precompiled files found in a given folder.
   def remove_python_compiled_files path
